@@ -1,7 +1,14 @@
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+
 local player = Players.LocalPlayer
 
-local enabled = false -- starts OFF, use the button (set to true to start ON)
+-- ======================================================
+-- Settings
+-- ======================================================
+local TELEPORT_DELAY = 5 -- seconds between teleports
 
 local positions = {
     -- Position 1
@@ -93,75 +100,333 @@ local positions = {
     ) * CFrame.new(0, 0, -10)
 }
 
+-- ======================================================
+-- State
+-- ======================================================
+local alive = true
+local teleportEnabled = false
+local antiAfkEnabled = false
 local index = 1
 
--- GUI
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "TeleportToggleGui"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = player:WaitForChild("PlayerGui")
+local antiAfkCon = nil
+local disabledCons = {}
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 180, 0, 90)
-frame.Position = UDim2.new(0, 20, 0.5, -45)
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = screenGui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+-- ======================================================
+-- Anti AFK
+-- ======================================================
+local function notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = 3,
+        })
+    end)
+end
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 30)
-title.BackgroundTransparency = 1
-title.Text = "Auto Teleport"
-title.TextColor3 = Color3.new(1, 1, 1)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 16
-title.Parent = frame
+local function setAntiAfk(state)
+    if state then
+        -- Pause any existing idle connections (Roblox's own kick handler)
+        if getconnections then
+            local ok, cons = pcall(getconnections, player.Idled)
+            if ok and cons then
+                for _, c in ipairs(cons) do
+                    pcall(function() c:Disable() end)
+                    table.insert(disabledCons, c)
+                end
+            end
+        end
 
-local button = Instance.new("TextButton")
-button.Size = UDim2.new(1, -20, 0, 40)
-button.Position = UDim2.new(0, 10, 0, 40)
-button.Font = Enum.Font.GothamBold
-button.TextSize = 18
-button.TextColor3 = Color3.new(1, 1, 1)
-button.Parent = frame
-Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
+        pcall(function()
+            if antiAfkCon then antiAfkCon:Disconnect() end
+        end)
 
-local function updateButton()
-    if enabled then
-        button.Text = "ON"
-        button.BackgroundColor3 = Color3.fromRGB(50, 180, 80)
+        antiAfkCon = player.Idled:Connect(function()
+            local VirtualInputManager = Instance.new("VirtualInputManager")
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+            VirtualInputManager:Destroy()
+        end)
+
+        notify("Anti AFK", "Anti AFK is enabled")
     else
-        button.Text = "OFF"
-        button.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        pcall(function()
+            if antiAfkCon then antiAfkCon:Disconnect() end
+        end)
+        antiAfkCon = nil
+
+        -- Give Roblox's original idle handlers back
+        for _, c in ipairs(disabledCons) do
+            pcall(function() c:Enable() end)
+        end
+        disabledCons = {}
+
+        notify("Anti AFK", "Anti AFK is disabled")
     end
 end
-updateButton()
 
-button.MouseButton1Click:Connect(function()
-    enabled = not enabled
-    updateButton()
+-- ======================================================
+-- GUI
+-- ======================================================
+local COLORS = {
+    bg1 = Color3.fromRGB(28, 28, 42),
+    bg2 = Color3.fromRGB(16, 16, 24),
+    row = Color3.fromRGB(36, 36, 54),
+    accent = Color3.fromRGB(140, 100, 255),
+    on = Color3.fromRGB(70, 210, 130),
+    off = Color3.fromRGB(70, 70, 90),
+    text = Color3.fromRGB(240, 240, 250),
+    subtext = Color3.fromRGB(150, 150, 175),
+    close = Color3.fromRGB(235, 80, 90),
+}
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "TeleportAntiAfkGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local FULL_SIZE = UDim2.new(0, 260, 0, 184)
+local MINI_SIZE = UDim2.new(0, 260, 0, 38)
+
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = FULL_SIZE
+frame.AnchorPoint = Vector2.new(0.5, 0.5)
+frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+frame.BackgroundColor3 = COLORS.bg1
+frame.BorderSizePixel = 0
+frame.ClipsDescendants = true
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
+
+local frameGradient = Instance.new("UIGradient")
+frameGradient.Color = ColorSequence.new(COLORS.bg1, COLORS.bg2)
+frameGradient.Rotation = 90
+frameGradient.Parent = frame
+
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Color = COLORS.accent
+frameStroke.Thickness = 1.5
+frameStroke.Transparency = 0.35
+frameStroke.Parent = frame
+
+-- Title bar (drag handle)
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 38)
+titleBar.BackgroundColor3 = COLORS.accent
+titleBar.BackgroundTransparency = 0.82
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.new(0, 14, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "⚡ Auto Farm Hub"
+title.TextColor3 = COLORS.text
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+local function makeTitleButton(text, xOffset, color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 24, 0, 24)
+    b.Position = UDim2.new(1, xOffset, 0.5, -12)
+    b.BackgroundColor3 = color
+    b.BackgroundTransparency = 0.25
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    b.AutoButtonColor = true
+    b.Parent = titleBar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+    return b
+end
+
+local minimizeBtn = makeTitleButton("–", -62, COLORS.off)
+local closeBtn = makeTitleButton("×", -32, COLORS.close)
+
+-- Body
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, 0, 1, -38)
+body.Position = UDim2.new(0, 0, 0, 38)
+body.BackgroundTransparency = 1
+body.Parent = frame
+
+local TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+-- Builds one row: label + subtitle + animated switch.
+-- Returns functions to set the switch visually and to change the subtitle.
+local function createToggleRow(yPos, labelText, subText, onToggle)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -24, 0, 56)
+    row.Position = UDim2.new(0, 12, 0, yPos)
+    row.BackgroundColor3 = COLORS.row
+    row.BorderSizePixel = 0
+    row.Parent = body
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 10)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -80, 0, 22)
+    label.Position = UDim2.new(0, 12, 0, 8)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = COLORS.text
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
+
+    local sub = Instance.new("TextLabel")
+    sub.Size = UDim2.new(1, -80, 0, 18)
+    sub.Position = UDim2.new(0, 12, 0, 29)
+    sub.BackgroundTransparency = 1
+    sub.Text = subText
+    sub.TextColor3 = COLORS.subtext
+    sub.Font = Enum.Font.Gotham
+    sub.TextSize = 11
+    sub.TextXAlignment = Enum.TextXAlignment.Left
+    sub.Parent = row
+
+    local switch = Instance.new("TextButton")
+    switch.Size = UDim2.new(0, 52, 0, 28)
+    switch.Position = UDim2.new(1, -64, 0.5, -14)
+    switch.BackgroundColor3 = COLORS.off
+    switch.Text = ""
+    switch.AutoButtonColor = false
+    switch.Parent = row
+    Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 22, 0, 22)
+    knob.Position = UDim2.new(0, 3, 0.5, -11)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel = 0
+    knob.Parent = switch
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local function setVisual(state)
+        TweenService:Create(switch, TWEEN_INFO, {
+            BackgroundColor3 = state and COLORS.on or COLORS.off,
+        }):Play()
+        TweenService:Create(knob, TWEEN_INFO, {
+            Position = state and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11),
+        }):Play()
+    end
+
+    local state = false
+    switch.MouseButton1Click:Connect(function()
+        state = not state
+        setVisual(state)
+        onToggle(state)
+    end)
+
+    local function setSub(text)
+        sub.Text = text
+    end
+
+    return setVisual, setSub
+end
+
+local refreshTeleportSub
+
+local _, setTeleportSub = createToggleRow(12, "Auto Teleport", "Off", function(state)
+    teleportEnabled = state
+    refreshTeleportSub()
 end)
 
--- Teleport loop (checks the toggle every 0.1s so OFF reacts quickly)
+local _, setAfkSub = createToggleRow(76, "Anti AFK", "Idle kick protection: Off", function(state)
+    antiAfkEnabled = state
+    setAntiAfk(state)
+    setAfkSub(state and "Idle kick protection: On" or "Idle kick protection: Off")
+end)
+
+-- Minimize
+local minimized = false
+minimizeBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    minimizeBtn.Text = minimized and "+" or "–"
+    TweenService:Create(frame, TWEEN_INFO, {
+        Size = minimized and MINI_SIZE or FULL_SIZE,
+    }):Play()
+end)
+
+-- Teleport sub-label updates
+refreshTeleportSub = function()
+    if teleportEnabled then
+        setTeleportSub("Running · next: #" .. index .. " of " .. #positions)
+    else
+        setTeleportSub("Off · next: #" .. index .. " of " .. #positions)
+    end
+end
+refreshTeleportSub()
+
+-- Dragging (mouse + touch)
+do
+    local dragging = false
+    local dragStart, startPos
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- Close: stop everything and clean up
+closeBtn.MouseButton1Click:Connect(function()
+    alive = false
+    teleportEnabled = false
+    if antiAfkEnabled then
+        antiAfkEnabled = false
+        setAntiAfk(false)
+    end
+    screenGui:Destroy()
+end)
+
+-- ======================================================
+-- Teleport loop
+-- ======================================================
 task.spawn(function()
     local elapsed = 0
-    while true do
+    while alive do
         elapsed += task.wait(0.1)
 
-        if elapsed >= 2 then
-            if enabled then
+        if elapsed >= TELEPORT_DELAY then
+            elapsed = 0
+
+            if teleportEnabled then
                 local character = player.Character or player.CharacterAdded:Wait()
                 local root = character:WaitForChild("HumanoidRootPart")
 
-                if enabled then
+                if teleportEnabled and alive then
                     root.CFrame = positions[index]
                     index = (index % #positions) + 1
+                    refreshTeleportSub()
                 end
             end
-            elapsed = 0
         end
     end
 end)
